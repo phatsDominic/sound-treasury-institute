@@ -1,7 +1,8 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { 
-  BarChart3, ShieldCheck, HardHat, Activity, 
+  BarChart3, ShieldCheck, HardHat, ArrowRight, Activity, 
   TrendingUp, FileText, Menu, X, Anchor, Factory, 
   Loader2, AlertCircle, RefreshCcw, Download, Settings, 
   Database, Trophy, LayoutDashboard, FlaskConical
@@ -11,12 +12,14 @@ import {
   Tooltip, ResponsiveContainer, ComposedChart
 } from 'recharts';
 
-import { generateStaticBtcHistory } from './utils/staticData';
-import { calculateFairPrice, GENESIS_DATE, MODEL_COEFF, MODEL_EXPONENT, ONE_DAY_MS, PROJECT_TO_YEAR, downsampleData } from './utils/powerLaw';
-import { SECTOR_CONFIG, START_YEAR } from './utils/sectorConfig';
-import { buildComparisonSeries } from './utils/comparison';
-
 // --- 1. CONSTANTS & CONFIGURATION ---
+
+const GENESIS_DATE = new Date('2009-01-03').getTime();
+const ONE_DAY_MS = 1000 * 60 * 60 * 24;
+const PROJECT_TO_YEAR = 2035;
+const MODEL_COEFF = 7.34596586961056e-18;
+const MODEL_EXPONENT = 5.82;
+const START_YEAR = 2016;
 
 // Image Paths
 const HERO_IMAGE_LOCAL = "/assets/industrial-refinery-hero.png";
@@ -24,69 +27,71 @@ const MONOCHROME_IMAGE_LOCAL = "/assets/industrial-monochrome.png";
 const HERO_FALLBACK = "https://images.unsplash.com/photo-1518709911915-712d59df4634?q=80&w=2600&auto=format&fit=crop"; 
 const MONOCHROME_FALLBACK = "https://images.unsplash.com/photo-1486312338219-ce68d2c6f44d?q=80&w=2672&auto=format&fit=crop";
 
+// Types
+interface Asset {
+  symbol: string;
+  name: string;
+  color: string;
+}
 
 // Comparison Assets
-const SECTORS = {
-  chemicals: {
-    ...SECTOR_CONFIG.chemicals,
-    icon: <FlaskConical className="text-purple-500" />
-  },
-  agriculture: {
-    ...SECTOR_CONFIG.agriculture,
-    icon: <Factory className="text-green-600" />
-  }
-} as const;
+const ASSETS: Asset[] = [
+  { symbol: 'BTC-USD', name: 'Bitcoin', color: '#f7931a' },
+  { symbol: 'DOW', name: 'Dow Inc.', color: '#C8102E' }, 
+  { symbol: 'BASFY', name: 'BASF (ADR)', color: '#004A96' }, 
+  { symbol: 'CE', name: 'Celanese', color: '#008542' },
+  { symbol: 'MEOH', name: 'Methanex', color: '#582C83' },
+  { symbol: 'FSCHX', name: 'Fidelity Chem', color: '#71c7ec' }
+];
 
-// --- 2. GLOBAL CACHE ---
-// Cache data outside the component lifecycle so it persists across view changes
-const GLOBAL_CACHE: {
-  plData: any[] | null;
-  chartData: any[] | null;
-  plStats: { stdDev: number, rSquared: number, currentPrice: number | null, currentFairPrice: number | null, dataSource: string } | null;
-  sectorData: Record<string, { years: any[], scoreboard: any[] }>;
-} = {
-  plData: null,
-  chartData: null,
-  plStats: null,
-  sectorData: {}
-};
-
-// Helper to save/load from localStorage
-const STORAGE_KEY = 'sound_money_btc_cache_v2';
-const saveToStorage = (data: any, stats: any, chartData: any[]) => {
-  try {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, stats, chartData, timestamp: Date.now() }));
-    }
-  } catch (e) { console.warn('Cache save failed', e); }
-};
-
-const loadFromStorage = () => {
-  try {
-    if (typeof window !== 'undefined') {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // Valid for 24 hours
-        if (Date.now() - parsed.timestamp < 1000 * 60 * 60 * 24) {
-           return parsed;
-        }
-      }
-    }
-  } catch (e) { return null; }
-  return null;
+const STATIC_HISTORY: Record<number, Record<string, { start: number; end: number } | null>> = {
+  2016: { 'BTC-USD': { start: 434, end: 963 }, 'DOW': null, 'BASFY': { start: 16.5, end: 20.8 }, 'CE': { start: 66, end: 78.5 }, 'MEOH': { start: 27.77, end: 45.95 }, 'FSCHX': { start: 12.12, end: 14.91 } },
+  2017: { 'BTC-USD': { start: 963, end: 13860 }, 'DOW': null, 'BASFY': { start: 20.8, end: 27.5 }, 'CE': { start: 78.5, end: 107 }, 'MEOH': { start: 45.95, end: 54.15 }, 'FSCHX': { start: 14.91, end: 18.42 } },
+  2018: { 'BTC-USD': { start: 13860, end: 3740 }, 'DOW': null, 'BASFY': { start: 27.5, end: 17.2 }, 'CE': { start: 107, end: 90 }, 'MEOH': { start: 54.15, end: 64.49 }, 'FSCHX': { start: 18.42, end: 14.42 } },
+  2019: { 'BTC-USD': { start: 3740, end: 7200 }, 'DOW': { start: 51.63, end: 54.73 }, 'BASFY': { start: 17.2, end: 19.5 }, 'CE': { start: 90, end: 123 }, 'MEOH': { start: 64.49, end: 35.42 }, 'FSCHX': { start: 14.42, end: 11.95 } },
+  2020: { 'BTC-USD': { start: 7200, end: 28990 }, 'DOW': { start: 46.07, end: 55.5 }, 'BASFY': { start: 19.5, end: 17.8 }, 'CE': { start: 123, end: 129 }, 'MEOH': { start: 35.42, end: 45.45 }, 'FSCHX': { start: 11.95, end: 12.26 } },
+  2021: { 'BTC-USD': { start: 28990, end: 46200 }, 'DOW': { start: 55.5, end: 56.72 }, 'BASFY': { start: 17.8, end: 19.2 }, 'CE': { start: 129, end: 168 }, 'MEOH': { start: 45.45, end: 39.55 }, 'FSCHX': { start: 12.26, end: 16.76 } },
+  2022: { 'BTC-USD': { start: 46200, end: 16530 }, 'DOW': { start: 59.73, end: 50.39 }, 'BASFY': { start: 19.2, end: 13.5 }, 'CE': { start: 168, end: 102.2 }, 'MEOH': { start: 39.55, end: 37.86 }, 'FSCHX': { start: 16.76, end: 15.81 } },
+  2023: { 'BTC-USD': { start: 16530, end: 42260 }, 'DOW': { start: 59.35, end: 54.84 }, 'BASFY': { start: 13.5, end: 15.2 }, 'CE': { start: 102.2, end: 155.3 }, 'MEOH': { start: 37.86, end: 47.36 }, 'FSCHX': { start: 15.81, end: 15.41 } },
+  2024: { 'BTC-USD': { start: 42260, end: 98000 }, 'DOW': { start: 53.6, end: 40.13 }, 'BASFY': { start: 15.2, end: 12.44 }, 'CE': { start: 146.14, end: 68.76 }, 'MEOH': { start: 45.58, end: 49 }, 'FSCHX': { start: 14.78, end: 13.53 } },
+  2025: { 'BTC-USD': { start: 98000, end: 87556 }, 'DOW': { start: 39.05, end: 22.21 }, 'BASFY': { start: 12.44, end: 12.18 }, 'CE': { start: 68, end: 37.93 }, 'MEOH': { start: 49.55, end: 35.09 }, 'FSCHX': { start: 12.88, end: 11.57 } }
 };
 
 // --- 2. HELPERS ---
 
-const formatPrice = (val: number | null) => !val ? '-' : val > 1000 ? `$${val.toLocaleString(undefined, {maximumFractionDigits: 0})}` : `$${val.toFixed(2)}`;
-
+const calculateFairPrice = (days: number) => days <= 0 ? 0 : MODEL_COEFF * Math.pow(days, MODEL_EXPONENT);
+const formatPrice = (val: number | null | undefined) => {
+  if (val === null || val === undefined) return '-';
+  return val > 1000 ? `$${val.toLocaleString(undefined, {maximumFractionDigits: 0})}` : `$${val.toFixed(2)}`;
+};
 const formatCurrency = (val: number) => val >= 1000000 ? `$${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `$${(val / 1000).toFixed(0)}k` : `$${val.toFixed(0)}`;
 
-// --- 3. BASE COMPONENTS (Defined first to avoid ReferenceError) ---
+const fetchWithRetry = async (url: string, maxRetries = 3, initialDelay = 1000) => {
+    let delay = initialDelay;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+            return await response.json();
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2; 
+        }
+    }
+};
 
-const Button = ({ children, variant = "primary", className = "", onClick }: { children: React.ReactNode, variant?: "primary" | "secondary" | "outline", className?: string, onClick?: () => void }) => {
-  const baseStyle = "inline-flex items-center justify-center px-6 py-3 border text-base font-medium rounded-sm transition-all duration-200 shadow-sm";
+// --- 3. BASE COMPONENTS ---
+
+interface ButtonProps {
+  children: React.ReactNode;
+  variant?: "primary" | "secondary" | "outline";
+  className?: string;
+  onClick?: () => void;
+}
+
+const Button = ({ children, variant = "primary", className = "", onClick }: ButtonProps) => {
+  const baseStyle = "inline-flex items-center justify-center px-6 py-3 border text-base font-medium rounded-sm transition-all duration-200 shadow-sm cursor-pointer";
   const variants = {
     primary: "border-transparent text-slate-900 bg-amber-500 hover:bg-amber-400 focus:ring-2 focus:ring-offset-2 focus:ring-amber-500",
     secondary: "border-slate-600 text-slate-200 bg-transparent hover:bg-slate-800 hover:border-slate-500 focus:ring-2 focus:ring-offset-2 focus:ring-slate-500",
@@ -100,7 +105,7 @@ const Button = ({ children, variant = "primary", className = "", onClick }: { ch
   );
 };
 
-const Section = ({ children, className = "", id = "" }: { children: React.ReactNode, className?: string, id?: string }) => (
+const Section = ({ children, className = "", id = "" }: { children: React.ReactNode; className?: string; id?: string }) => (
   <div id={id} className={`py-20 px-4 sm:px-6 lg:px-8 ${className}`}>
     <div className="max-w-7xl mx-auto">
       {children}
@@ -108,7 +113,7 @@ const Section = ({ children, className = "", id = "" }: { children: React.ReactN
   </div>
 );
 
-const SectionTitle = ({ title, subtitle, light = false }: { title: string, subtitle?: boolean, light?: boolean }) => (
+const SectionTitle = ({ title, subtitle, light = false }: { title: string; subtitle?: boolean; light?: boolean }) => (
   <div className="mb-12">
     <h2 className={`text-3xl font-bold tracking-tight sm:text-4xl ${light ? 'text-white' : 'text-slate-900'}`}>
       {title}
@@ -119,7 +124,14 @@ const SectionTitle = ({ title, subtitle, light = false }: { title: string, subti
   </div>
 );
 
-const ImageWithFallback = ({ src, fallback, alt, className }: { src: string, fallback: string, alt: string, className?: string }) => {
+interface ImageFallbackProps {
+  src: string;
+  fallback: string;
+  alt: string;
+  className?: string;
+}
+
+const ImageWithFallback = ({ src, fallback, alt, className }: ImageFallbackProps) => {
   const [imgSrc, setImgSrc] = useState(src);
   return (
     <img 
@@ -133,7 +145,12 @@ const ImageWithFallback = ({ src, fallback, alt, className }: { src: string, fal
 
 // --- 4. LAYOUT COMPONENTS ---
 
-const Navbar = ({ currentView, setView }: { currentView: string, setView: (view: string) => void }) => {
+interface NavProps {
+  currentView: string;
+  setView: (view: string) => void;
+}
+
+const Navbar = ({ currentView, setView }: NavProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const navLinks = [
     { label: 'Home', view: 'home' },
@@ -236,7 +253,7 @@ const Footer = () => (
 
 // --- 5. PAGE VIEWS ---
 
-const HomeView = ({ setView }: { setView: (view: string) => void }) => (
+const HomeView = ({ setView }: NavProps) => (
   <>
     <div className="relative bg-slate-900 overflow-hidden min-h-[600px] flex items-center">
       <div className="absolute inset-0">
@@ -450,7 +467,7 @@ const HomeView = ({ setView }: { setView: (view: string) => void }) => (
   </>
 );
 
-const ExecutivesView = ({ setView }: { setView: (view: string) => void }) => (
+const ExecutivesView = ({ setView }: NavProps) => (
   <>
     <div className="bg-slate-900 py-24 border-b border-slate-800">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -465,7 +482,7 @@ const ExecutivesView = ({ setView }: { setView: (view: string) => void }) => (
         </p>
         <div className="flex flex-col sm:flex-row justify-center gap-4">
           <Button onClick={() => setView('data')}>View the Models & Dashboards</Button>
-          <Button variant="secondary" onClick={() => { const el = document.getElementById('exec-overview'); if(el) el.scrollIntoView({behavior:'smooth'}) }}>
+          <Button variant="secondary" onClick={() => document.getElementById('exec-overview')?.scrollIntoView({behavior:'smooth'})}>
             Read the Executive Overview
           </Button>
         </div>
@@ -604,33 +621,21 @@ const ExecutivesView = ({ setView }: { setView: (view: string) => void }) => (
 );
 
 const DataModelsView = () => {
-  const [activeTab, setActiveTab] = useState('powerLaw');
-  const [activeSector, setActiveSector] = useState<'chemicals' | 'agriculture'>('chemicals');
-  const staticFallback = useMemo(() => generateStaticBtcHistory(), []);
-  const initialPlData = GLOBAL_CACHE.plData || staticFallback;
-  const initialChartData = GLOBAL_CACHE.chartData || downsampleData(initialPlData, 800);
-  const initialComparison = useMemo(() => {
-    const historyClone = SECTORS.chemicals.staticHistory ? JSON.parse(JSON.stringify(SECTORS.chemicals.staticHistory)) : {};
-    return buildComparisonSeries(historyClone, SECTORS.chemicals.assets);
-  }, []);
-
-  const [plData, setPlData] = useState<any[]>(initialPlData);
-  const [chartData, setChartData] = useState<any[]>(initialChartData);
-  const [plLoading, setPlLoading] = useState(!GLOBAL_CACHE.plData);
+  const [activeTab, setActiveTab] = useState('powerLaw'); 
+  const [plData, setPlData] = useState<any[]>([]);
+  const [plLoading, setPlLoading] = useState(true);
   const [plError, setPlError] = useState<string | null>(null);
-  const [plDataSource, setPlDataSource] = useState(GLOBAL_CACHE.plStats?.dataSource || 'Initializing...');
-  const [compData, setCompData] = useState<any[]>(initialComparison.years);
+  const [plDataSource, setPlDataSource] = useState('Initializing...');
+  const [compData, setCompData] = useState<any[]>([]);
   const [compLoading, setCompLoading] = useState(false);
   const [compError, setCompError] = useState<string | null>(null);
-  const [scoreboard, setScoreboard] = useState<any[]>(initialComparison.scoreboard); 
+  const [scoreboard, setScoreboard] = useState<any[]>([]); 
   const [yScale, setYScale] = useState<'log' | 'linear'>('log');
-  const [xScale, setXScale] = useState<'date' | 'log-days'>('date');
-  const [currentPrice, setCurrentPrice] = useState<number | null>(GLOBAL_CACHE.plStats?.currentPrice || null);
-  const [currentFairPrice, setCurrentFairPrice] = useState<number | null>(GLOBAL_CACHE.plStats?.currentFairPrice || null);
-  const [stdDev, setStdDev] = useState(GLOBAL_CACHE.plStats?.stdDev || 0);
-  const [rSquared, setRSquared] = useState(GLOBAL_CACHE.plStats?.rSquared || 0); 
-  
-  // ... existing state ...
+  const [xScale, setXScale] = useState('date');
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [currentFairPrice, setCurrentFairPrice] = useState<number | null>(null);
+  const [stdDev, setStdDev] = useState(0);
+  const [rSquared, setRSquared] = useState(0);
 
   const formatXAxis = (val: number) => {
     if (xScale === 'date') return new Date(val).getFullYear().toString();
@@ -641,6 +646,34 @@ const DataModelsView = () => {
   const formatTooltipDate = (label: number) => {
     const date = xScale === 'date' ? new Date(label) : new Date(GENESIS_DATE + label * ONE_DAY_MS);
     return date.toLocaleDateString();
+  };
+
+  // Data fetching helper (uses global fetchWithRetry)
+  const fetchCoinCapData = async () => {
+      const json = await fetchWithRetry('https://api.coincap.io/v2/assets/bitcoin/history?interval=d1');
+      if (!json.data) throw new Error('Invalid CoinCap Data');
+      return json.data.map((d: any) => ({ date: d.time, price: parseFloat(d.priceUsd) }));
+  };
+
+  const fetchYahooData = async (symbol: string, interval = '1d', range = 'max') => {
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=${interval}&_=${new Date().getTime()}`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`;
+    const response = await fetch(proxyUrl);
+    if (!response.ok) throw new Error(`Yahoo Proxy Error`);
+    const wrapper = await response.json();
+    if (!wrapper.contents) throw new Error(`Invalid Proxy Data`);
+    const json = JSON.parse(wrapper.contents);
+    if (!json.chart?.result?.[0]) throw new Error(`Invalid Yahoo Data`);
+    const result = json.chart.result[0];
+    const timestamps = result.timestamp || [];
+    const quotes = result.indicators.quote[0].close || [];
+    const adjClose = result.indicators.adjclose?.[0]?.adjclose || quotes;
+    return timestamps.map((ts: number, index: number) => ({ date: ts * 1000, price: adjClose[index] }));
+  };
+
+  const fetchCoinGeckoData = async () => {
+    const json = await fetchWithRetry('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=max&interval=daily');
+    return json.prices.map(([ts, price]: [number, number]) => ({ date: ts, price: price }));
   };
 
   const loadPlDemoData = () => {
@@ -671,7 +704,6 @@ const DataModelsView = () => {
       });
     }
     setPlData(demoData);
-    setChartData(downsampleData(demoData, 800));
     const lastReal = demoData.filter(d => d.price !== null).pop();
     if(lastReal) {
         setCurrentPrice(lastReal.price);
@@ -679,62 +711,73 @@ const DataModelsView = () => {
     }
   };
 
-  const fetchPowerLawData = async (forceRefresh = false) => {
-    if (!forceRefresh && GLOBAL_CACHE.plData && GLOBAL_CACHE.plStats && GLOBAL_CACHE.chartData) {
-        setPlData(GLOBAL_CACHE.plData);
-        setChartData(GLOBAL_CACHE.chartData);
-        setStdDev(GLOBAL_CACHE.plStats.stdDev);
-        setRSquared(GLOBAL_CACHE.plStats.rSquared);
-        setCurrentPrice(GLOBAL_CACHE.plStats.currentPrice);
-        setCurrentFairPrice(GLOBAL_CACHE.plStats.currentFairPrice);
-        setPlDataSource(GLOBAL_CACHE.plStats.dataSource);
-        setPlLoading(false);
-        return;
-    }
-
-    if (!forceRefresh) {
-      const stored = loadFromStorage();
-      if (stored?.data && stored?.stats) {
-        const resolvedChart = stored.chartData?.length ? stored.chartData : downsampleData(stored.data, 800);
-        GLOBAL_CACHE.plData = stored.data;
-        GLOBAL_CACHE.plStats = stored.stats;
-        GLOBAL_CACHE.chartData = resolvedChart;
-        setPlData(stored.data);
-        setChartData(resolvedChart);
-        setStdDev(stored.stats.stdDev);
-        setRSquared(stored.stats.rSquared);
-        setCurrentPrice(stored.stats.currentPrice);
-        setCurrentFairPrice(stored.stats.currentFairPrice);
-        setPlDataSource(`${stored.stats.dataSource} (cached)`);
-        setPlLoading(false);
-        return;
-      }
-    }
-
+  const fetchPowerLawData = async () => {
     setPlLoading(true);
     setPlError(null);
+    let rawPoints: any[] = [];
+    let sourceName = '';
 
     try {
-      const response = await fetch('/api/btc');
-      if (!response.ok) throw new Error('Failed to fetch BTC data');
-      const payload = await response.json();
-      if (!payload?.data || !payload?.stats) throw new Error('Invalid BTC payload');
+      try {
+         sourceName = 'CoinCap API';
+         rawPoints = await fetchCoinCapData();
+      } catch (ccErr) {
+         try {
+           sourceName = 'Yahoo Finance';
+           rawPoints = await fetchYahooData('BTC-USD');
+         } catch (yahooErr) {
+             sourceName = 'CoinGecko';
+             rawPoints = await fetchCoinGeckoData();
+         }
+      }
 
-      const resolvedChart = payload.chartData?.length ? payload.chartData : downsampleData(payload.data, 800);
-      GLOBAL_CACHE.plData = payload.data;
-      GLOBAL_CACHE.chartData = resolvedChart;
-      GLOBAL_CACHE.plStats = payload.stats;
-      saveToStorage(payload.data, payload.stats, resolvedChart);
+      let processedData = rawPoints.map(pt => {
+        if (pt.price === null || pt.price === undefined) return null;
+        const daysSinceGenesis = (pt.date - GENESIS_DATE) / ONE_DAY_MS;
+        const fairPrice = daysSinceGenesis > 0 ? calculateFairPrice(daysSinceGenesis) : 0;
+        return { date: pt.date, price: pt.price, fairPrice, daysSinceGenesis };
+      }).filter((d): d is { date: number; price: number; fairPrice: number; daysSinceGenesis: number } => d !== null && d.price > 0 && d.fairPrice > 0 && d.daysSinceGenesis > 1);
 
-      setPlData(payload.data);
-      setChartData(resolvedChart);
-      setStdDev(payload.stats.stdDev);
-      setRSquared(payload.stats.rSquared);
-      setCurrentPrice(payload.stats.currentPrice);
-      setCurrentFairPrice(payload.stats.currentFairPrice);
-      setPlDataSource(`${payload.stats.dataSource}${payload.stats.verification?.matches === false ? ' (verify)' : ''}`);
+      if (processedData.length === 0) throw new Error('No valid data');
+
+      const logResiduals = processedData.map(d => Math.log(d.price) - Math.log(d.fairPrice));
+      const meanResidual = logResiduals.reduce((sum, val) => sum + val, 0) / logResiduals.length;
+      const squaredDiffs = logResiduals.map(val => Math.pow(val - meanResidual, 2));
+      const variance = squaredDiffs.reduce((sum, val) => sum + val, 0) / squaredDiffs.length;
+      
+      setStdDev(Math.sqrt(variance));
+      setPlDataSource(sourceName);
+
+      const lastPoint = processedData[processedData.length - 1];
+      setCurrentPrice(lastPoint.price);
+      setCurrentFairPrice(lastPoint.fairPrice);
+
+      const targetDateMs = new Date(`${PROJECT_TO_YEAR}-12-31`).getTime();
+      const futureData = [];
+      let nextDateMs = lastPoint.date + ONE_DAY_MS;
+
+      while (nextDateMs <= targetDateMs) {
+        const daysSinceGenesis = (nextDateMs - GENESIS_DATE) / ONE_DAY_MS;
+        const fairPrice = calculateFairPrice(daysSinceGenesis);
+        futureData.push({ date: nextDateMs, price: null, fairPrice, daysSinceGenesis });
+        nextDateMs += ONE_DAY_MS;
+      }
+
+      const combined = [...processedData, ...futureData].map(d => ({
+        ...d,
+        upperBand: d.fairPrice * Math.exp(2 * Math.sqrt(variance)), 
+        lowerBand: d.fairPrice * Math.exp(-1 * Math.sqrt(variance)),
+      }));
+
+      const logActuals = processedData.map(d => Math.log(d.price));
+      const meanLogActual = logActuals.reduce((a, b) => a + b, 0) / logActuals.length;
+      const ssTot = logActuals.reduce((acc, val) => acc + Math.pow(val - meanLogActual, 2), 0);
+      const ssRes = processedData.reduce((acc, d) => acc + Math.pow(Math.log(d.price) - Math.log(d.fairPrice), 2), 0);
+      setRSquared(1 - (ssRes / ssTot));
+
+      setPlData(combined);
+
     } catch (err) {
-      console.error(err);
       setPlError(`Live data unavailable. Using simulated data.`);
       setPlDataSource('Demo Data (Simulation)');
       loadPlDemoData();
@@ -743,64 +786,91 @@ const DataModelsView = () => {
     }
   };
 
-  const fetchComparisonData = async (sectorKey: 'chemicals' | 'agriculture' = activeSector, forceRefresh = false) => {
-    if (!forceRefresh && GLOBAL_CACHE.sectorData[sectorKey]) {
-      if (sectorKey === activeSector) {
-        setCompData(GLOBAL_CACHE.sectorData[sectorKey].years);
-        setScoreboard(GLOBAL_CACHE.sectorData[sectorKey].scoreboard);
-      }
-      return;
-    }
-
-    if (!GLOBAL_CACHE.sectorData[sectorKey]) {
-      const fallback = buildStaticComparison(sectorKey);
-      if (sectorKey === activeSector) {
-        setCompData(fallback.years);
-        setScoreboard(fallback.scoreboard);
-      }
-    }
-
+  const fetchComparisonData = async () => {
+    if (compData.length > 0) return; 
     setCompLoading(true);
     setCompError(null);
-    
     try {
-      const response = await fetch(`/api/sector/${sectorKey}`);
-      if (!response.ok) throw new Error('Failed to fetch sector data');
-      const payload = await response.json();
-      if (!payload?.years || !payload?.scoreboard) throw new Error('Invalid sector payload');
-      GLOBAL_CACHE.sectorData[sectorKey] = { years: payload.years, scoreboard: payload.scoreboard };
-      if (sectorKey === activeSector) {
-        setCompData(payload.years);
-        setScoreboard(payload.scoreboard);
-      }
+      processComparisonData(STATIC_HISTORY);
     } catch (err) {
-      console.error(err);
-      setCompError("Could not fetch latest data. Showing static history.");
-      const fallback = buildStaticComparison(sectorKey);
-      GLOBAL_CACHE.sectorData[sectorKey] = fallback;
-      if (sectorKey === activeSector) {
-        setCompData(fallback.years);
-        setScoreboard(fallback.scoreboard);
-      }
+      setCompError("Failed to load comparison data.");
     } finally {
       setCompLoading(false);
     }
   };
 
-  const buildStaticComparison = (sectorKey: 'chemicals' | 'agriculture') => {
-    const sectorConfig = SECTORS[sectorKey];
-    const historyData: Record<number, Record<string, any>> = sectorConfig.staticHistory
-      ? JSON.parse(JSON.stringify(sectorConfig.staticHistory))
-      : {};
-    return buildComparisonSeries(historyData, sectorConfig.assets);
+  const processComparisonData = (historyData: Record<number, Record<string, { start: number; end: number } | null>>) => {
+      const years: any[] = [];
+      const wins: Record<string, number> = {};
+      ASSETS.forEach(a => wins[a.symbol] = 0);
+      
+      for (let year = START_YEAR; year <= 2025; year++) {
+          const yearReturns: any[] = [];
+          const yearData = historyData[year];
+
+          if (yearData) {
+              ASSETS.forEach(asset => {
+                  const stats = yearData[asset.symbol];
+                  if (!stats) {
+                      yearReturns.push({ ...asset, value: null, startPrice: null, endPrice: null });
+                  } else {
+                      const percentChange = ((stats.end - stats.start) / stats.start) * 100;
+                      yearReturns.push({ ...asset, value: percentChange, startPrice: stats.start, endPrice: stats.end });
+                  }
+              });
+
+              yearReturns.sort((a, b) => {
+                 if (a.value === null) return 1;
+                 if (b.value === null) return -1;
+                 return b.value - a.value;
+              });
+
+              const winner = yearReturns[0].value !== null ? yearReturns[0] : null;
+              if (winner) wins[winner.symbol] = (wins[winner.symbol] || 0) + 1;
+
+              years.push({ year, returns: yearReturns, winner });
+          }
+      }
+
+      const calculateStats = (symbol: string) => {
+          const getPrice = (year: number, type: 'start' | 'end') => historyData[year] ? historyData[year][symbol]?.[type] : null;
+          const currentEnd = getPrice(2025, 'end');
+          
+          if (!currentEnd) return { cagr2: null, cagr3: null, cagr5: null, cagr10: null, label10: "10Y", totalReturn: null };
+
+          const p2 = getPrice(2023, 'end');
+          const cagr2 = p2 ? (Math.pow(currentEnd / p2, 1/2) - 1) * 100 : null;
+          
+          const p3 = getPrice(2022, 'end');
+          const cagr3 = p3 ? (Math.pow(currentEnd / p3, 1/3) - 1) * 100 : null;
+          
+          const p5 = getPrice(2020, 'end');
+          const cagr5 = p5 ? (Math.pow(currentEnd / p5, 1/5) - 1) * 100 : null;
+
+          let startYear10 = 2016;
+          let years10 = 10;
+          let label10 = "10Y";
+          if (symbol === 'DOW') { startYear10 = 2019; years10 = 2025 - 2019 + 1; label10 = "6Y"; }
+          
+          const p10 = getPrice(startYear10, 'start');
+          const cagr10 = p10 ? (Math.pow(currentEnd / p10, 1/years10) - 1) * 100 : null;
+          const totalReturn = p10 ? ((currentEnd - p10) / p10) * 100 : null;
+          
+          return { cagr2, cagr3, cagr5, cagr10, label10, totalReturn };
+      };
+
+      const sortedScoreboard = Object.entries(wins).map(([symbol, count]) => {
+            const asset = ASSETS.find(a => a.symbol === symbol)!;
+            const stats = calculateStats(symbol);
+            return { ...asset, count, ...stats };
+      }).sort((a, b) => b.count - a.count);
+
+      setCompData(years);
+      setScoreboard(sortedScoreboard);
   };
 
   useEffect(() => { fetchPowerLawData(); }, []);
-  useEffect(() => { 
-    if (activeTab === 'comparison') { 
-      fetchComparisonData(activeSector); 
-    } 
-  }, [activeTab, activeSector]);
+  useEffect(() => { if (activeTab === 'comparison') { fetchComparisonData(); } }, [activeTab]);
 
   const downloadPlCSV = () => {
     if (!plData.length) return;
@@ -834,33 +904,8 @@ const DataModelsView = () => {
                    <button onClick={() => setActiveTab('powerLaw')} className={`px-4 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${activeTab === 'powerLaw' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Power Law Model</button>
                    <button onClick={() => setActiveTab('comparison')} className={`px-4 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${activeTab === 'comparison' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Industrial Race</button>
                  </div>
-                 {activeTab === 'comparison' && (
-                   <div className="flex bg-slate-900 border border-slate-700 rounded-md p-1 ml-2">
-                      {(Object.keys(SECTORS) as Array<keyof typeof SECTORS>).map(sector => (
-                        <button
-                          key={sector}
-                          onClick={() => {
-                            // Clear data briefly to avoid data/label mismatch during switch if not cached
-                            if (activeSector !== sector && !GLOBAL_CACHE.sectorData[sector]) {
-                                setCompData([]); 
-                            }
-                            setActiveSector(sector);
-                          }}
-                          className={`px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${activeSector === sector ? 'bg-slate-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                        >
-                          {SECTORS[sector].icon} {SECTORS[sector].label}
-                        </button>
-                      ))}
-                   </div>
-                 )}
              </div>
-             <button
-               onClick={() => activeTab === 'powerLaw' ? fetchPowerLawData(true) : fetchComparisonData(activeSector, true)}
-               className="p-2 hover:bg-slate-800 rounded-full text-slate-400 hover:text-white transition-colors"
-               title="Refresh Data"
-             >
-               <RefreshCcw size={18} />
-             </button>
+             <button onClick={activeTab === 'powerLaw' ? fetchPowerLawData : fetchComparisonData} className="p-2 hover:bg-slate-800 rounded-full text-slate-400 hover:text-white transition-colors" title="Refresh Data"><RefreshCcw size={18} /></button>
           </div>
 
           {activeTab === 'powerLaw' ? (
@@ -895,7 +940,7 @@ const DataModelsView = () => {
                   <div className="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3"><Loader2 className="animate-spin" size={32} /><p>Fetching Power Law data...</p></div>
                   ) : (
                   <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 20 }}>
+                      <ComposedChart data={plData} margin={{ top: 20, right: 30, left: 10, bottom: 20 }}>
                       <defs><linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/><stop offset="95%" stopColor="#a855f7" stopOpacity={0}/></linearGradient></defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} vertical={false} />
                       <XAxis dataKey={xScale === 'date' ? 'date' : 'daysSinceGenesis'} tickFormatter={formatXAxis} stroke="#64748b" tick={{ fontSize: 11 }} minTickGap={50} type="number" scale={xScale === 'date' ? 'time' : 'log'} domain={['dataMin', 'dataMax']} allowDataOverflow={true}/>
@@ -918,8 +963,8 @@ const DataModelsView = () => {
           ) : (
               <div className="space-y-8 animate-in fade-in duration-500 w-full">
               <div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-bold text-white border-l-4 border-amber-500 pl-4">Industry Cycle Comparison: 2010–2025</h2></div>
-              <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-xl text-center"><h2 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-3">{SECTORS[activeSector].icon} Bitcoin vs. {SECTORS[activeSector].label} Industry</h2><p className="text-slate-400 text-sm max-w-2xl mx-auto">Year-over-Year (YoY) growth comparison starting from {START_YEAR}. Tracks Bitcoin against major {activeSector} companies.</p></div>
-              {compLoading && (<div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-4"><Loader2 className="animate-spin" size={48} /><p>Crunching historical data for {activeSector} assets...</p></div>)}
+              <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-xl text-center"><h2 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-3"><FlaskConical className="text-purple-500" />Bitcoin vs. Chemical Industry</h2><p className="text-slate-400 text-sm max-w-2xl mx-auto">Year-over-Year (YoY) growth comparison starting from {START_YEAR}. Tracks Bitcoin against major chemical companies and funds: Dow, BASF, Celanese, Methanex, and FSCHX.</p></div>
+              {compLoading && (<div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-4"><Loader2 className="animate-spin" size={48} /><p>Crunching historical data for 6 assets...</p></div>)}
               {compError && (<div className="bg-yellow-900/20 border border-yellow-700/50 text-yellow-200 p-6 rounded-lg text-center"><AlertCircle className="mx-auto mb-2" size={32} />{compError}</div>)}
               {!compLoading && (
                   <>
@@ -931,7 +976,7 @@ const DataModelsView = () => {
                           {yearData.winner && (<span className="text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 text-yellow-200 border border-yellow-500/30 flex items-center gap-1"><Trophy size={12} />Winner: {yearData.winner.name}</span>)}
                           </div>
                           <div className="p-4"><div className="flex flex-col gap-2">
-                              {yearData.returns.map((item: any, idx: number) => (
+                              {yearData.returns.map((item, idx) => (
                               <div key={item.symbol} className="relative flex items-center h-10">
                                   <div className="w-24 text-xs font-medium text-slate-400 shrink-0 truncate pr-2 flex flex-col justify-center"><span>{item.name}</span></div>
                                   <div className="w-28 text-[10px] text-slate-500 shrink-0 flex flex-col justify-center mr-2 border-l border-slate-800 pl-2 leading-tight">
